@@ -14,10 +14,12 @@ This is a small repository of utility scripts and web projects created with Clau
 
 ### Git Workflow
 The repository follows a strict workflow:
-- Always use clear, descriptive commit messages
-- Commit and push changes to GitHub after each substantive change
+- **ALWAYS commit and push changes to GitHub after each substantive change**
+- Never complete substantial work without committing it
 - GitHub repo: https://github.com/samgod15/omniroute
 - Remote is set up as `origin` pointing to the master branch
+- Always use clear, descriptive commit messages so work is never lost or hard to understand
+- Regular commits ensure we always have a saved version of the current project state
 
 ## Architecture
 
