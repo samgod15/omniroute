@@ -78,7 +78,7 @@ function parseJsonBody(req) {
     let body = '';
     req.on('data', chunk => {
       body += chunk;
-      if (body.length > 10 * 1024 * 1024) { // 10MB limit
+      if (body.length > 50 * 1024 * 1024) { // 50MB limit
         reject(new Error('Request entity too large'));
       }
     });
@@ -107,8 +107,12 @@ function serveStaticFile(res, filePath) {
     '.jpeg': 'image/jpeg',
     '.gif': 'image/gif',
     '.svg': 'image/svg+xml',
+    '.webp': 'image/webp',
+    '.bmp': 'image/bmp',
     '.ico': 'image/x-icon',
-    '.txt': 'text/plain; charset=utf-8'
+    '.pdf': 'application/pdf',
+    '.txt': 'text/plain; charset=utf-8',
+    '.md': 'text/plain; charset=utf-8'
   };
 
   const contentType = mimeTypes[ext] || 'application/octet-stream';
@@ -318,6 +322,10 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
+      if (!fs.existsSync(UPLOADS_DIR)) {
+        fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+      }
+
       const safeName = Date.now() + '_' + path.basename(name).replace(/[^a-zA-Z0-9._-]/g, '_');
       const targetPath = path.join(UPLOADS_DIR, safeName);
       const relPath = path.relative(WORKSPACE_DIR, targetPath).replace(/\\/g, '/');
@@ -327,15 +335,18 @@ const server = http.createServer(async (req, res) => {
       fs.writeFileSync(targetPath, buffer);
 
       const ext = path.extname(safeName).toLowerCase();
-      const imageExts = new Set(['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp']);
+      const imageExts = new Set(['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.ico', '.bmp']);
       const isImage = imageExts.has(ext);
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         success: true,
+        id: safeName,
+        name: name,
         filename: safeName,
         originalName: name,
         path: relPath,
+        relPath: relPath,
         size: buffer.length,
         isImage,
         url: `/uploads/${safeName}`
@@ -351,12 +362,13 @@ const server = http.createServer(async (req, res) => {
   // API: Read and visualising files (Code, Images, Markdown, HTML)
   // ----------------------------------------------------
   if (method === 'GET' && pathname === '/api/file') {
-    const relPath = parsedUrl.query.path;
+    let relPath = parsedUrl.query.path;
     if (!relPath) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Missing path' }));
       return;
     }
+    relPath = relPath.replace(/^[/\\]+/, '');
     const safePath = path.resolve(WORKSPACE_DIR, relPath);
     if (!safePath.startsWith(WORKSPACE_DIR)) {
       res.writeHead(403, { 'Content-Type': 'application/json' });
@@ -463,10 +475,26 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    const { prompt, sessionId, permissionMode, model } = body;
-    if (!prompt || typeof prompt !== 'string') {
+    const { prompt, attachments, sessionId, permissionMode, model } = body;
+
+    let fullPrompt = (prompt || '').trim();
+    if (Array.isArray(attachments) && attachments.length > 0) {
+      const attachmentList = attachments.map(a => {
+        const attPath = a.path || a.relPath || a.filename;
+        const attName = a.name || a.originalName || a.filename;
+        return `- ${attName}: ${attPath} (${a.isImage ? 'image' : 'file'})`;
+      }).join('\n');
+
+      if (fullPrompt) {
+        fullPrompt += `\n\n[Attached workspace files]:\n${attachmentList}`;
+      } else {
+        fullPrompt = `[Attached workspace files]:\n${attachmentList}\nPlease inspect and analyze these attached files.`;
+      }
+    }
+
+    if (!fullPrompt) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing prompt' }));
+      res.end(JSON.stringify({ error: 'Missing prompt or attachments' }));
       return;
     }
 
@@ -485,7 +513,7 @@ const server = http.createServer(async (req, res) => {
     // Construct CLI arguments
     const args = [
       '-p',
-      prompt,
+      fullPrompt,
       '--output-format',
       'stream-json',
       '--verbose',
@@ -705,6 +733,16 @@ const server = http.createServer(async (req, res) => {
   // ----------------------------------------------------
   // Static File Serving
   // ----------------------------------------------------
+  // Dedicated uploads serving
+  if (method === 'GET' && pathname.startsWith('/uploads/')) {
+    const fileName = path.basename(pathname);
+    const targetPath = path.join(UPLOADS_DIR, fileName);
+    if (fs.existsSync(targetPath)) {
+      serveStaticFile(res, targetPath);
+      return;
+    }
+  }
+
   let filePath = pathname === '/' ? '/index.html' : pathname;
   // Look in public folder first
   let localPath = path.join(WORKSPACE_DIR, 'public', filePath);

@@ -445,6 +445,7 @@
   }
 
   async function handleFileUpload(file) {
+    if (!file) return;
     showToast(`Uploading ${file.name}...`);
     return new Promise((resolve) => {
       const reader = new FileReader();
@@ -460,17 +461,46 @@
               data: base64Data
             })
           });
+
+          if (!res.ok) {
+            const errText = await res.text();
+            let errMsg = `Server returned ${res.status}`;
+            try {
+              const parsed = JSON.parse(errText);
+              if (parsed.error) errMsg = parsed.error;
+            } catch (_) {
+              if (errText) errMsg = errText;
+            }
+            showToast(`Upload failed: ${errMsg}`, 'error');
+            resolve();
+            return;
+          }
+
           const result = await res.json();
           if (result.success) {
-            activeAttachments.push(result);
+            activeAttachments.push({
+              id: result.id || result.filename,
+              name: result.name || result.originalName || file.name,
+              filename: result.filename,
+              path: result.path || result.relPath,
+              relPath: result.relPath || result.path,
+              url: result.url,
+              size: result.size,
+              isImage: result.isImage,
+              type: file.type
+            });
             renderAttachmentTray();
             showToast(`Attached ${file.name}`, 'success');
           } else {
-            showToast(`Upload failed: ${result.error}`, 'error');
+            showToast(`Upload failed: ${result.error || 'Unknown error'}`, 'error');
           }
         } catch (err) {
           showToast(`Upload error: ${err.message}`, 'error');
         }
+        resolve();
+      };
+      reader.onerror = () => {
+        showToast('Error reading file from disk', 'error');
         resolve();
       };
       reader.readAsDataURL(file);
@@ -626,8 +656,10 @@
   }
 
   async function openFileModal(relPath) {
+    if (!relPath) return;
+    const cleanPath = String(relPath).replace(/^[/\\]+/, '');
     try {
-      modalFileName.textContent = relPath;
+      modalFileName.textContent = cleanPath;
       modalFileContent.textContent = 'Loading file...';
       modalFileSize.textContent = '';
       modalTabsGroup.style.display = 'none';
@@ -636,10 +668,11 @@
       modalImageContainer.style.display = 'none';
       fileModal.classList.add('active');
 
-      const res = await fetch(`/api/file?path=${encodeURIComponent(relPath)}`);
+      const res = await fetch(`/api/file?path=${encodeURIComponent(cleanPath)}`);
       const data = await res.json();
 
       if (data.error) {
+        showToast(`File error: ${data.error}`, 'error');
         modalFileContent.textContent = 'Error: ' + data.error;
         return;
       }
@@ -647,7 +680,7 @@
       currentModalFileData = data;
       modalFileSize.textContent = `${(data.size / 1024).toFixed(1)} KB`;
 
-      const ext = (relPath.split('.').pop() || '').toLowerCase();
+      const ext = (cleanPath.split('.').pop() || '').toLowerCase();
       const isImg = data.isImage || ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico'].includes(ext);
       const isMd = ['md', 'markdown'].includes(ext);
       const isHtml = ['html', 'htm'].includes(ext);
