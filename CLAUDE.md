@@ -9,6 +9,7 @@ This is a small repository of utility scripts and web projects created with Clau
 ## Commands
 
 ### Running Projects
+- **Claude Code Web Studio**: Run with Node.js: `node server.js` then open `http://localhost:3000`
 - **Tic Tac Toe**: Open `tictactoe.html` in any web browser (no build process required)
 - **today.js**: Run with Node.js: `node today.js`
 
@@ -22,6 +23,12 @@ The repository follows a strict workflow:
 - Regular commits ensure we always have a saved version of the current project state
 
 ## Architecture
+
+### Claude Code Web Studio (`server.js`, `public/`)
+- Native Node.js HTTP server streaming Server-Sent Events (SSE)
+- Bridges web client to `claude` CLI via `--output-format stream-json`
+- Supports full multi-turn session persistence, visual diffs, and tool tracking
+- Connects to OmniRoute local router on port 20128
 
 ### Tic Tac Toe Game (`tictactoe.html`)
 - Single-file HTML game (all CSS and JS embedded)
