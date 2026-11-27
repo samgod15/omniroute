@@ -213,6 +213,37 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ----------------------------------------------------
+  // API: Rename a Session
+  // ----------------------------------------------------
+  if (method === 'POST' && pathname === '/api/sessions/rename') {
+    try {
+      const body = await parseJsonBody(req);
+      const { id, title } = body;
+      if (!id || !title) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Missing id or title' }));
+        return;
+      }
+      let sessions = loadSessions();
+      const sess = sessions.find(s => s.id === id);
+      if (sess) {
+        sess.title = title.trim();
+        sess.updatedAt = new Date().toISOString();
+        saveSessions(sessions);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, session: sess }));
+      } else {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Session not found' }));
+      }
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
+  // ----------------------------------------------------
   // API: Workspace File Tree
   // ----------------------------------------------------
   if (method === 'GET' && pathname === '/api/files') {

@@ -8,19 +8,18 @@ A collection of utility scripts, web interfaces, and local development tools cre
 A modern, responsive web interface for running and monitoring **Claude Code** and **OmniRoute** outside the terminal.
 
 **Features:**
+- **1-Click Windows Launcher**: Double-click `Launch-Web-Studio.bat` or the desktop shortcut to launch and open the browser.
 - **Zero Dependencies**: Pure Node.js HTTP server + Server-Sent Events (SSE).
 - **Streaming Output**: Real-time response streaming, thought accordion, and token counters.
 - **Visual Tool Cards**: Collapsible cards for `Bash`, `PowerShell`, `Read`, `Write`, and visual colorized `Edit` diffs.
+- **Session Management**: Rename, search, filter, resume, export (Markdown), and delete multi-turn sessions.
 - **Workspace File Explorer**: Interactive file tree with built-in modal syntax viewer.
-- **Session Management**: Resume, switch, and manage multi-turn sessions with full context memory.
-- **OmniRoute Integration**: Live status monitor for local OmniRoute router (`:20128`).
+- **OmniRoute Integration**: Live status monitor for local OmniRoute router (`:20128`) and custom model selector.
 - **Dark & Light Themes**: Sleek Linear/Cursor-inspired design with keyboard shortcuts.
 
 **Usage:**
-```bash
-node server.js
-```
-Then open [http://localhost:3000](http://localhost:3000) in your web browser.
+- **1-Click**: Double click `Launch-Web-Studio.bat` (or use the desktop shortcut).
+- **Terminal**: Run `node server.js` and open [http://localhost:3000](http://localhost:3000).
 
 ### 🎮 Tic Tac Toe (`tictactoe.html`)
 A fully functional, browser-based Tic Tac Toe game with a beautiful UI.

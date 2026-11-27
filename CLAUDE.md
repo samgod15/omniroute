@@ -9,7 +9,8 @@ This is a small repository of utility scripts and web projects created with Clau
 ## Commands
 
 ### Running Projects
-- **Claude Code Web Studio**: Run with Node.js: `node server.js` then open `http://localhost:3000`
+- **Claude Code Web Studio (1-Click)**: Double click `Launch-Web-Studio.bat` or the "Claude Code Web Studio" desktop shortcut. Automatically sets OmniRoute environment variables, starts server, and opens browser at `http://localhost:3000`.
+- **Claude Code Web Studio (CLI)**: Run with Node.js: `node server.js` then open `http://localhost:3000`
 - **Tic Tac Toe**: Open `tictactoe.html` in any web browser (no build process required)
 - **today.js**: Run with Node.js: `node today.js`
 

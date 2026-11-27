@@ -1,4 +1,5 @@
-// Claude Code Web Studio - Frontend Application
+// Claude Code Web Studio - Enhanced Frontend Application
+// Real-time SSE streaming, session manager, visual diffs, and OmniRoute routing
 
 (function () {
   'use strict';
@@ -8,6 +9,8 @@
   let sessions = [];
   let isRunning = false;
   let activeAbortController = null;
+  let chatHistory = []; // { role: 'user'|'assistant'|'system', content: string, time: string }
+  let sessionSearchQuery = '';
 
   // DOM Elements
   const chatContainer = document.getElementById('chatContainer');
@@ -18,7 +21,10 @@
   const stopBtn = document.getElementById('stopBtn');
   const newChatBtn = document.getElementById('newChatBtn');
   const clearChatBtn = document.getElementById('clearChatBtn');
+  const exportChatBtn = document.getElementById('exportChatBtn');
+  const renameSessionBtn = document.getElementById('renameSessionBtn');
   const sessionsList = document.getElementById('sessionsList');
+  const sessionSearchInput = document.getElementById('sessionSearchInput');
   const filesTree = document.getElementById('filesTree');
   const refreshFilesBtn = document.getElementById('refreshFilesBtn');
   const omnirouteBadge = document.getElementById('omnirouteBadge');
@@ -26,18 +32,21 @@
   const currentSessionIdTag = document.getElementById('currentSessionId');
   const permissionModeSelect = document.getElementById('permissionModeSelect');
   const modelSelect = document.getElementById('modelSelect');
+  const customModelInput = document.getElementById('customModelInput');
   const themeToggle = document.getElementById('themeToggle');
   const sidebar = document.getElementById('sidebar');
   const sidebarToggle = document.getElementById('sidebarToggle');
   const mobileMenuBtn = document.getElementById('mobileMenuBtn');
   const workspacePath = document.getElementById('workspacePath');
   const activeStatusPill = document.getElementById('activeStatusPill');
+  const toastContainer = document.getElementById('toastContainer');
 
   // File Modal Elements
   const fileModal = document.getElementById('fileModal');
   const modalFileName = document.getElementById('modalFileName');
   const modalFileSize = document.getElementById('modalFileSize');
   const modalFileContent = document.getElementById('modalFileContent');
+  const copyFileContentBtn = document.getElementById('copyFileContentBtn');
   const closeModalBtn = document.getElementById('closeModalBtn');
 
   // Setup Marked Markdown renderer
@@ -57,6 +66,29 @@
   }
 
   // ----------------------------------------------------
+  // Toast Notification System
+  // ----------------------------------------------------
+  function showToast(message, type = 'info') {
+    if (!toastContainer) return;
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+
+    let icon = 'ℹ️';
+    if (type === 'success') icon = '✅';
+    if (type === 'error') icon = '⚠️';
+
+    toast.innerHTML = `<span>${icon}</span><span>${escapeHtml(message)}</span>`;
+    toastContainer.appendChild(toast);
+
+    setTimeout(() => {
+      toast.style.opacity = '0';
+      toast.style.transform = 'translateY(10px)';
+      toast.style.transition = 'all 0.3s ease';
+      setTimeout(() => toast.remove(), 300);
+    }, 2800);
+  }
+
+  // ----------------------------------------------------
   // Initialization
   // ----------------------------------------------------
   async function init() {
@@ -68,8 +100,8 @@
     await loadSessions();
     await loadFiles();
 
-    // Check OmniRoute status periodically
-    setInterval(checkOmniroute, 20000);
+    // Check OmniRoute status periodically (every 15s)
+    setInterval(checkOmniroute, 15000);
   }
 
   // Theme Handling
@@ -83,6 +115,7 @@
     const newTheme = isDark ? 'light' : 'dark';
     document.body.className = newTheme === 'light' ? 'light-theme' : 'dark-theme';
     localStorage.setItem('claude-web-theme', newTheme);
+    showToast(`Switched to ${newTheme} theme`);
   }
 
   // ----------------------------------------------------
@@ -93,7 +126,7 @@
       const res = await fetch('/api/status');
       const data = await res.json();
       if (data.cwd) {
-        workspacePath.querySelector('span').textContent = data.cwd;
+        workspacePath.querySelector('span').textContent = data.cwd.split(/[\\/]/).pop() || data.cwd;
         workspacePath.title = `Working Directory: ${data.cwd}`;
       }
     } catch (e) {
@@ -105,18 +138,18 @@
     try {
       const res = await fetch('/api/omniroute');
       const data = await res.json();
+      const label = omnirouteBadge.querySelector('.status-label');
       if (data.online) {
-        omnirouteBadge.textContent = 'OmniRoute Online';
-        omnirouteBadge.className = 'badge online';
-        omnirouteBadge.title = 'OmniRoute router running on port 20128';
+        omnirouteBadge.className = 'router-status-badge online';
+        if (label) label.textContent = 'OmniRoute Online';
+        omnirouteBadge.title = 'OmniRoute router running at http://localhost:20128';
       } else {
-        omnirouteBadge.textContent = 'Local Claude';
-        omnirouteBadge.className = 'badge offline';
-        omnirouteBadge.title = 'OmniRoute not detected on :20128 - using standard Claude CLI';
+        omnirouteBadge.className = 'router-status-badge offline';
+        if (label) label.textContent = 'OmniRoute Offline';
+        omnirouteBadge.title = 'OmniRoute router not detected on port 20128';
       }
     } catch (_) {
-      omnirouteBadge.textContent = 'Offline';
-      omnirouteBadge.className = 'badge offline';
+      omnirouteBadge.className = 'router-status-badge offline';
     }
   }
 
@@ -135,12 +168,22 @@
 
   function renderSessions() {
     sessionsList.innerHTML = '';
-    if (!sessions || sessions.length === 0) {
-      sessionsList.innerHTML = '<div class="empty-state-small">No saved sessions yet</div>';
+    const filtered = sessions.filter(s => {
+      if (!sessionSearchQuery) return true;
+      const q = sessionSearchQuery.toLowerCase();
+      const titleMatch = (s.title || '').toLowerCase().includes(q);
+      const promptMatch = (s.lastPrompt || '').toLowerCase().includes(q);
+      const idMatch = (s.id || '').toLowerCase().includes(q);
+      const modelMatch = (s.model || '').toLowerCase().includes(q);
+      return titleMatch || promptMatch || idMatch || modelMatch;
+    });
+
+    if (!filtered || filtered.length === 0) {
+      sessionsList.innerHTML = `<div class="empty-state-small">${sessionSearchQuery ? 'No matching sessions' : 'No saved sessions yet'}</div>`;
       return;
     }
 
-    sessions.forEach(sess => {
+    filtered.forEach(sess => {
       const div = document.createElement('div');
       div.className = `session-item ${sess.id === currentSessionId ? 'active' : ''}`;
 
@@ -151,7 +194,7 @@
       div.innerHTML = `
         <div class="session-title-wrap">
           <span class="session-name">${escapeHtml(sess.title || sess.lastPrompt || 'Session ' + sess.id.slice(0, 8))}</span>
-          <span class="session-date">${dateStr} ${timeStr} · ${sess.model || 'auto'}</span>
+          <span class="session-date">${dateStr} ${timeStr} · ${escapeHtml(sess.model || 'auto')}</span>
         </div>
         <button class="session-delete-btn" title="Delete Session" data-id="${sess.id}">
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
@@ -180,15 +223,56 @@
     currentSessionId = sess.id;
     currentSessionTitle.textContent = sess.title || 'Session ' + sess.id.slice(0, 8);
     currentSessionIdTag.textContent = sess.id;
+
     if (sess.model) {
-      modelSelect.value = sess.model;
+      const optionExists = Array.from(modelSelect.options).some(o => o.value === sess.model);
+      if (optionExists) {
+        modelSelect.value = sess.model;
+        customModelInput.style.display = 'none';
+      } else {
+        modelSelect.value = '__custom__';
+        customModelInput.style.display = 'inline-block';
+        customModelInput.value = sess.model;
+      }
     }
+
     renderSessions();
-    // Clear chat feed to start fresh resume turn
     clearChatUI();
+    chatHistory = [];
     welcomeScreen.style.display = 'none';
-    appendSystemNotice(`Resumed session <code>${sess.id}</code>. Messages sent will continue this conversation.`);
+    appendSystemNotice(`Resumed conversation <code>${sess.id}</code>. Context preserved.`);
     promptInput.focus();
+    showToast(`Loaded session: ${sess.title || sess.id.slice(0, 8)}`);
+  }
+
+  async function renameCurrentSession() {
+    if (!currentSessionId) {
+      showToast('Start or select a session to rename', 'error');
+      return;
+    }
+    const currentName = currentSessionTitle.textContent;
+    const newName = prompt('Enter new session name:', currentName);
+    if (!newName || newName.trim() === '' || newName === currentName) return;
+
+    try {
+      const res = await fetch('/api/sessions/rename', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: currentSessionId, title: newName.trim() })
+      });
+      const data = await res.json();
+      if (data.success) {
+        currentSessionTitle.textContent = newName.trim();
+        const sess = sessions.find(s => s.id === currentSessionId);
+        if (sess) sess.title = newName.trim();
+        renderSessions();
+        showToast('Session renamed successfully', 'success');
+      } else {
+        showToast('Rename failed: ' + (data.error || 'Unknown error'), 'error');
+      }
+    } catch (err) {
+      showToast('Rename error: ' + err.message, 'error');
+    }
   }
 
   async function deleteSession(id) {
@@ -196,13 +280,14 @@
     try {
       await fetch(`/api/sessions/${id}`, { method: 'DELETE' });
       sessions = sessions.filter(s => s.id !== id);
+      showToast('Session deleted');
       if (currentSessionId === id) {
         startNewSession();
       } else {
         renderSessions();
       }
     } catch (e) {
-      alert('Failed to delete session: ' + e.message);
+      showToast('Failed to delete session: ' + e.message, 'error');
     }
   }
 
@@ -211,14 +296,58 @@
     currentSessionTitle.textContent = 'New Session';
     currentSessionIdTag.textContent = 'Ready';
     clearChatUI();
+    chatHistory = [];
     welcomeScreen.style.display = 'flex';
     renderSessions();
     promptInput.value = '';
     promptInput.focus();
+    showToast('Started new session');
   }
 
   function clearChatUI() {
     messagesFeed.innerHTML = '';
+  }
+
+  // ----------------------------------------------------
+  // Export Chat to Markdown
+  // ----------------------------------------------------
+  function exportChatMarkdown() {
+    if (!chatHistory || chatHistory.length === 0) {
+      showToast('No conversation history to export', 'error');
+      return;
+    }
+
+    let md = `# Claude Code Session: ${currentSessionTitle.textContent}\n`;
+    md += `*Session ID:* \`${currentSessionId || 'New Session'}\`\n`;
+    md += `*Date:* ${new Date().toLocaleString()}\n`;
+    md += `*Target Model:* ${getSelectedModel()}\n\n---\n\n`;
+
+    chatHistory.forEach(item => {
+      if (item.role === 'user') {
+        md += `### 👤 User (${item.time})\n\n${item.content}\n\n`;
+      } else if (item.role === 'assistant') {
+        md += `### 🤖 Claude Code (${item.time})\n\n${item.content}\n\n`;
+      }
+    });
+
+    const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const safeTitle = (currentSessionTitle.textContent || 'session').replace(/[^a-zA-Z0-9_-]/g, '_');
+    a.download = `${safeTitle}-${Date.now()}.md`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast('Exported session to Markdown file', 'success');
+  }
+
+  function getSelectedModel() {
+    if (modelSelect.value === '__custom__') {
+      return customModelInput.value.trim() || 'auto/best-coding';
+    }
+    return modelSelect.value;
   }
 
   // ----------------------------------------------------
@@ -312,6 +441,9 @@
     resetTextareaHeight();
     welcomeScreen.style.display = 'none';
 
+    const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    chatHistory.push({ role: 'user', content: text, time: timeStr });
+
     // 1. Add User Message to UI
     appendUserMessage(text);
 
@@ -325,11 +457,12 @@
     activeAbortController = new AbortController();
 
     try {
+      const chosenModel = getSelectedModel();
       const payload = {
         prompt: text,
         sessionId: currentSessionId,
         permissionMode: permissionModeSelect.value,
-        model: modelSelect.value !== 'custom' ? modelSelect.value : null
+        model: chosenModel
       };
 
       const response = await fetch('/api/chat', {
@@ -377,13 +510,20 @@
     } catch (err) {
       if (err.name === 'AbortError') {
         turn.setStatus('Stopped by user');
+        showToast('Execution stopped by user', 'info');
       } else {
         turn.showError(err.message);
+        showToast('Error: ' + err.message, 'error');
       }
     } finally {
       setRunning(false);
       activeAbortController = null;
       turn.finalize();
+      chatHistory.push({
+        role: 'assistant',
+        content: turn.getFinalText(),
+        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      });
       await loadSessions();
       await loadFiles();
     }
@@ -443,6 +583,10 @@
     const container = document.createElement('div');
     container.className = 'message-turn assistant-turn';
 
+    const avatar = document.createElement('div');
+    avatar.className = 'assistant-avatar';
+    avatar.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>`;
+
     const body = document.createElement('div');
     body.className = 'assistant-body';
 
@@ -488,6 +632,7 @@
     body.appendChild(toolsContainer);
     body.appendChild(textContainer);
     body.appendChild(footer);
+    container.appendChild(avatar);
     container.appendChild(body);
 
     let rawMarkdown = '';
@@ -566,10 +711,12 @@
         const outTokens = result.usage ? result.usage.output_tokens : 0;
 
         footer.innerHTML = `
-          <span class="turn-stat">⏱️ ${duration}s</span>
-          <span class="turn-stat">🪙 in: ${inTokens.toLocaleString()} / out: ${outTokens.toLocaleString()}</span>
-          ${cost ? `<span class="turn-stat">💵 ${cost}</span>` : ''}
-          <span class="turn-stat">⚡ Completed</span>
+          <div class="turn-stats-group">
+            <span class="turn-stat">⏱️ ${duration}s</span>
+            <span class="turn-stat">🪙 ${inTokens.toLocaleString()} in / ${outTokens.toLocaleString()} out</span>
+            ${cost ? `<span class="turn-stat">💵 ${cost}</span>` : ''}
+          </div>
+          <span class="turn-stat" style="color: var(--success-text)">✓ Completed</span>
         `;
       },
       setStatus(status) {
@@ -584,6 +731,9 @@
         errDiv.style.borderRadius = 'var(--radius-sm)';
         errDiv.textContent = 'Error: ' + errText;
         body.appendChild(errDiv);
+      },
+      getFinalText() {
+        return rawMarkdown || 'Done';
       },
       finalize() {
         if (!rawMarkdown && toolsContainer.children.length === 0) {
@@ -637,6 +787,7 @@
       copyBtn.addEventListener('click', () => {
         navigator.clipboard.writeText(code.innerText).then(() => {
           copyBtn.textContent = 'Copied!';
+          showToast('Code copied to clipboard', 'success');
           setTimeout(() => (copyBtn.textContent = 'Copy'), 1800);
         });
       });
@@ -674,6 +825,7 @@
       if (activeAbortController) {
         activeAbortController.abort();
       }
+      showToast('Stopping active process...', 'info');
     } catch (e) {
       console.error('Error stopping:', e);
     }
@@ -724,10 +876,42 @@
     // New Session
     newChatBtn.addEventListener('click', startNewSession);
 
+    // Rename Session
+    if (renameSessionBtn) {
+      renameSessionBtn.addEventListener('click', renameCurrentSession);
+    }
+
+    // Export Chat
+    if (exportChatBtn) {
+      exportChatBtn.addEventListener('click', exportChatMarkdown);
+    }
+
+    // Filter Sessions
+    if (sessionSearchInput) {
+      sessionSearchInput.addEventListener('input', (e) => {
+        sessionSearchQuery = e.target.value;
+        renderSessions();
+      });
+    }
+
+    // Model Selector Custom Mode Toggle
+    if (modelSelect) {
+      modelSelect.addEventListener('change', (e) => {
+        if (e.target.value === '__custom__') {
+          customModelInput.style.display = 'inline-block';
+          customModelInput.focus();
+        } else {
+          customModelInput.style.display = 'none';
+        }
+      });
+    }
+
     // Clear Chat
     clearChatBtn.addEventListener('click', () => {
       clearChatUI();
+      chatHistory = [];
       welcomeScreen.style.display = 'flex';
+      showToast('Cleared conversation view');
     });
 
     // Theme Toggle
@@ -742,6 +926,12 @@
       sidebar.classList.toggle('mobile-open');
     });
 
+    // OmniRoute status click to re-check
+    omnirouteBadge.addEventListener('click', async () => {
+      showToast('Checking OmniRoute router status...');
+      await checkOmniroute();
+    });
+
     // Tabs inside sidebar
     document.querySelectorAll('.tab-btn').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -754,7 +944,10 @@
     });
 
     // Refresh Files
-    refreshFilesBtn.addEventListener('click', loadFiles);
+    refreshFilesBtn.addEventListener('click', () => {
+      loadFiles();
+      showToast('Refreshed file tree');
+    });
 
     // Prompt Suggestions
     document.querySelectorAll('.suggestion-card').forEach(card => {
@@ -778,12 +971,38 @@
       });
     });
 
+    // Copy File Modal Content
+    if (copyFileContentBtn) {
+      copyFileContentBtn.addEventListener('click', () => {
+        if (modalFileContent) {
+          navigator.clipboard.writeText(modalFileContent.innerText).then(() => {
+            showToast('File content copied to clipboard', 'success');
+          });
+        }
+      });
+    }
+
     // Close File Modal
     closeModalBtn.addEventListener('click', () => {
       fileModal.classList.remove('active');
     });
     fileModal.addEventListener('click', (e) => {
       if (e.target === fileModal) fileModal.classList.remove('active');
+    });
+
+    // Global Keyboard Shortcuts
+    document.addEventListener('keydown', (e) => {
+      // Escape closes modal
+      if (e.key === 'Escape') {
+        if (fileModal.classList.contains('active')) {
+          fileModal.classList.remove('active');
+        }
+      }
+      // Ctrl+B toggles sidebar
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') {
+        e.preventDefault();
+        sidebar.classList.toggle('collapsed');
+      }
     });
   }
 
