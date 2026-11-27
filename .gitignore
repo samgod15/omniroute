@@ -25,6 +25,8 @@ npm-debug.log*
 temp/
 tmp/
 .web-sessions.json
+.web-sessions-data/
+uploads/
 
 # Cache
 .cache/

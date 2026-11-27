@@ -1,5 +1,6 @@
-// Claude Code Web Studio - Enhanced Frontend Application
-// Real-time SSE streaming, session manager, visual diffs, and OmniRoute routing
+// Claude Code Studio - Frontend Application
+// Features: Real-time token streaming, session history restoration,
+// file/picture uploads, multi-modal file visualizer, and OmniRoute routing.
 
 (function () {
   'use strict';
@@ -9,8 +10,10 @@
   let sessions = [];
   let isRunning = false;
   let activeAbortController = null;
-  let chatHistory = []; // { role: 'user'|'assistant'|'system', content: string, time: string }
+  let chatHistory = []; // { role, content, time, thinking, tools, attachments }
   let sessionSearchQuery = '';
+  let activeAttachments = []; // [{ id, name, relPath, url, isImage, size, type }]
+  let currentModalFileData = null; // { path, name, content, dataUrl, isImage }
 
   // DOM Elements
   const chatContainer = document.getElementById('chatContainer');
@@ -39,13 +42,27 @@
   const mobileMenuBtn = document.getElementById('mobileMenuBtn');
   const workspacePath = document.getElementById('workspacePath');
   const activeStatusPill = document.getElementById('activeStatusPill');
+  const statusDot = document.getElementById('statusDot');
+  const scrollBottomBtn = document.getElementById('scrollBottomBtn');
   const toastContainer = document.getElementById('toastContainer');
+
+  // Attachment elements
+  const uploadBtn = document.getElementById('uploadBtn');
+  const fileUploadInput = document.getElementById('fileUploadInput');
+  const attachmentTray = document.getElementById('attachmentTray');
 
   // File Modal Elements
   const fileModal = document.getElementById('fileModal');
   const modalFileName = document.getElementById('modalFileName');
   const modalFileSize = document.getElementById('modalFileSize');
   const modalFileContent = document.getElementById('modalFileContent');
+  const modalCodeContainer = document.getElementById('modalCodeContainer');
+  const modalPreviewContainer = document.getElementById('modalPreviewContainer');
+  const modalImageContainer = document.getElementById('modalImageContainer');
+  const modalImagePreview = document.getElementById('modalImagePreview');
+  const modalTabsGroup = document.getElementById('modalTabsGroup');
+  const modalTabCode = document.getElementById('modalTabCode');
+  const modalTabPreview = document.getElementById('modalTabPreview');
   const copyFileContentBtn = document.getElementById('copyFileContentBtn');
   const closeModalBtn = document.getElementById('closeModalBtn');
 
@@ -83,8 +100,8 @@
     setTimeout(() => {
       toast.style.opacity = '0';
       toast.style.transform = 'translateY(10px)';
-      toast.style.transition = 'all 0.3s ease';
-      setTimeout(() => toast.remove(), 300);
+      toast.style.transition = 'all 0.25s ease';
+      setTimeout(() => toast.remove(), 250);
     }, 2800);
   }
 
@@ -95,6 +112,7 @@
     initTheme();
     bindEvents();
     setupTextareaAutoGrow();
+    setupDropAndPaste();
     await checkStatus();
     await checkOmniroute();
     await loadSessions();
@@ -126,7 +144,9 @@
       const res = await fetch('/api/status');
       const data = await res.json();
       if (data.cwd) {
-        workspacePath.querySelector('span').textContent = data.cwd.split(/[\\/]/).pop() || data.cwd;
+        const folderName = data.cwd.split(/[\\/]/).pop() || data.cwd;
+        const textSpan = workspacePath.querySelector('.path-text');
+        if (textSpan) textSpan.textContent = folderName;
         workspacePath.title = `Working Directory: ${data.cwd}`;
       }
     } catch (e) {
@@ -138,23 +158,23 @@
     try {
       const res = await fetch('/api/omniroute');
       const data = await res.json();
-      const label = omnirouteBadge.querySelector('.status-label');
+      const statusText = omnirouteBadge.querySelector('.status-text');
       if (data.online) {
-        omnirouteBadge.className = 'router-status-badge online';
-        if (label) label.textContent = 'OmniRoute Online';
+        omnirouteBadge.className = 'omniroute-badge online';
+        if (statusText) statusText.textContent = 'OmniRoute Online';
         omnirouteBadge.title = 'OmniRoute router running at http://localhost:20128';
       } else {
-        omnirouteBadge.className = 'router-status-badge offline';
-        if (label) label.textContent = 'OmniRoute Offline';
+        omnirouteBadge.className = 'omniroute-badge offline';
+        if (statusText) statusText.textContent = 'OmniRoute Offline';
         omnirouteBadge.title = 'OmniRoute router not detected on port 20128';
       }
     } catch (_) {
-      omnirouteBadge.className = 'router-status-badge offline';
+      omnirouteBadge.className = 'omniroute-badge offline';
     }
   }
 
   // ----------------------------------------------------
-  // Session Management
+  // Session Management & History Loading
   // ----------------------------------------------------
   async function loadSessions() {
     try {
@@ -179,47 +199,49 @@
     });
 
     if (!filtered || filtered.length === 0) {
-      sessionsList.innerHTML = `<div class="empty-state-small">${sessionSearchQuery ? 'No matching sessions' : 'No saved sessions yet'}</div>`;
+      sessionsList.innerHTML = `<div class="empty-list">${sessionSearchQuery ? 'No matching conversations' : 'No saved conversations'}</div>`;
       return;
     }
 
     filtered.forEach(sess => {
-      const div = document.createElement('div');
-      div.className = `session-item ${sess.id === currentSessionId ? 'active' : ''}`;
+      const card = document.createElement('div');
+      card.className = `session-card ${sess.id === currentSessionId ? 'active' : ''}`;
 
       const date = new Date(sess.updatedAt || sess.createdAt);
       const timeStr = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       const dateStr = date.toLocaleDateString([], { month: 'short', day: 'numeric' });
 
-      div.innerHTML = `
-        <div class="session-title-wrap">
-          <span class="session-name">${escapeHtml(sess.title || sess.lastPrompt || 'Session ' + sess.id.slice(0, 8))}</span>
-          <span class="session-date">${dateStr} ${timeStr} · ${escapeHtml(sess.model || 'auto')}</span>
+      card.innerHTML = `
+        <div class="session-title-block">
+          <span class="session-title-text">${escapeHtml(sess.title || sess.lastPrompt || 'Session ' + sess.id.slice(0, 8))}</span>
+          <span class="session-meta-text">${dateStr} ${timeStr} · ${escapeHtml(sess.model || 'auto')}</span>
         </div>
-        <button class="session-delete-btn" title="Delete Session" data-id="${sess.id}">
-          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
-            <polyline points="3 6 5 6 21 6"></polyline>
-            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-          </svg>
-        </button>
+        <div class="session-actions">
+          <button class="session-del-btn" title="Delete Session" data-id="${sess.id}">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="3 6 5 6 21 6"></polyline>
+              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+            </svg>
+          </button>
+        </div>
       `;
 
-      div.addEventListener('click', (e) => {
-        if (e.target.closest('.session-delete-btn')) return;
+      card.addEventListener('click', (e) => {
+        if (e.target.closest('.session-del-btn')) return;
         selectSession(sess);
       });
 
-      const delBtn = div.querySelector('.session-delete-btn');
+      const delBtn = card.querySelector('.session-del-btn');
       delBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
         await deleteSession(sess.id);
       });
 
-      sessionsList.appendChild(div);
+      sessionsList.appendChild(card);
     });
   }
 
-  function selectSession(sess) {
+  async function selectSession(sess) {
     currentSessionId = sess.id;
     currentSessionTitle.textContent = sess.title || 'Session ' + sess.id.slice(0, 8);
     currentSessionIdTag.textContent = sess.id;
@@ -238,11 +260,61 @@
 
     renderSessions();
     clearChatUI();
-    chatHistory = [];
     welcomeScreen.style.display = 'none';
-    appendSystemNotice(`Resumed conversation <code>${sess.id}</code>. Context preserved.`);
+    chatHistory = [];
+
+    // Fetch and restore saved conversation turns!
+    try {
+      const res = await fetch(`/api/sessions/${sess.id}/messages`);
+      const data = await res.json();
+      if (data.messages && data.messages.length > 0) {
+        chatHistory = data.messages;
+        renderSavedHistory(data.messages);
+      } else {
+        appendSystemNotice(`Resumed session <code>${sess.id}</code>.`);
+      }
+    } catch (err) {
+      console.warn('Could not load session transcript:', err);
+      appendSystemNotice(`Resumed session <code>${sess.id}</code>.`);
+    }
+
     promptInput.focus();
     showToast(`Loaded session: ${sess.title || sess.id.slice(0, 8)}`);
+  }
+
+  function renderSavedHistory(messages) {
+    messages.forEach(msg => {
+      if (msg.role === 'user') {
+        appendUserMessage(msg.content, msg.attachments);
+      } else if (msg.role === 'assistant') {
+        const turn = createAssistantTurn();
+        messagesFeed.appendChild(turn.container);
+
+        if (msg.thinking) {
+          turn.appendThinking(msg.thinking);
+        }
+
+        if (Array.isArray(msg.tools)) {
+          msg.tools.forEach(tool => {
+            turn.addToolCall(tool);
+            if (tool.result) {
+              turn.updateToolResult({ tool_use_id: tool.id, content: tool.result });
+            }
+          });
+        }
+
+        if (msg.content) {
+          turn.appendText(msg.content);
+        }
+
+        if (msg.stats) {
+          turn.setResultMetadata(msg.stats);
+        }
+
+        turn.finalize();
+      }
+    });
+    scrollToBottom();
   }
 
   async function renameCurrentSession() {
@@ -296,6 +368,7 @@
     currentSessionTitle.textContent = 'New Session';
     currentSessionIdTag.textContent = 'Ready';
     clearChatUI();
+    clearAttachments();
     chatHistory = [];
     welcomeScreen.style.display = 'flex';
     renderSessions();
@@ -306,6 +379,144 @@
 
   function clearChatUI() {
     messagesFeed.innerHTML = '';
+  }
+
+  // ----------------------------------------------------
+  // Attachments & Upload System
+  // ----------------------------------------------------
+  function setupDropAndPaste() {
+    // Paste handler for prompt textarea (Ctrl+V pictures/files)
+    promptInput.addEventListener('paste', async (e) => {
+      const items = (e.clipboardData || e.originalEvent.clipboardData).items;
+      let hasFile = false;
+      for (const item of items) {
+        if (item.kind === 'file') {
+          const file = item.getAsFile();
+          if (file) {
+            hasFile = true;
+            await handleFileUpload(file);
+          }
+        }
+      }
+      if (hasFile) {
+        e.preventDefault();
+      }
+    });
+
+    // Drag & drop on chat container
+    ['dragenter', 'dragover'].forEach(eventName => {
+      chatContainer.addEventListener(eventName, (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        chatContainer.classList.add('drag-over');
+      });
+    });
+
+    ['dragleave', 'drop'].forEach(eventName => {
+      chatContainer.addEventListener(eventName, (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        chatContainer.classList.remove('drag-over');
+      });
+    });
+
+    chatContainer.addEventListener('drop', async (e) => {
+      const files = e.dataTransfer.files;
+      if (files && files.length > 0) {
+        for (const file of files) {
+          await handleFileUpload(file);
+        }
+      }
+    });
+
+    // Upload button click
+    uploadBtn.addEventListener('click', () => {
+      fileUploadInput.click();
+    });
+
+    fileUploadInput.addEventListener('change', async () => {
+      if (fileUploadInput.files && fileUploadInput.files.length > 0) {
+        for (const file of fileUploadInput.files) {
+          await handleFileUpload(file);
+        }
+        fileUploadInput.value = '';
+      }
+    });
+  }
+
+  async function handleFileUpload(file) {
+    showToast(`Uploading ${file.name}...`);
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = async () => {
+        try {
+          const base64Data = reader.result; // data:image/png;base64,...
+          const res = await fetch('/api/upload', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              name: file.name,
+              type: file.type,
+              data: base64Data
+            })
+          });
+          const result = await res.json();
+          if (result.success) {
+            activeAttachments.push(result);
+            renderAttachmentTray();
+            showToast(`Attached ${file.name}`, 'success');
+          } else {
+            showToast(`Upload failed: ${result.error}`, 'error');
+          }
+        } catch (err) {
+          showToast(`Upload error: ${err.message}`, 'error');
+        }
+        resolve();
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function renderAttachmentTray() {
+    attachmentTray.innerHTML = '';
+    if (activeAttachments.length === 0) {
+      attachmentTray.style.display = 'none';
+      return;
+    }
+
+    attachmentTray.style.display = 'flex';
+    activeAttachments.forEach((att, index) => {
+      const pill = document.createElement('div');
+      pill.className = 'attachment-pill';
+
+      const thumbHtml = att.isImage && att.url
+        ? `<img src="${att.url}" class="attachment-thumb" alt="thumb">`
+        : `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>`;
+
+      pill.innerHTML = `
+        ${thumbHtml}
+        <span class="attachment-pill-name" title="${escapeHtml(att.name)}">${escapeHtml(att.name)}</span>
+        <button class="attachment-remove-btn" title="Remove attachment">✕</button>
+      `;
+
+      pill.querySelector('.attachment-remove-btn').addEventListener('click', (e) => {
+        e.stopPropagation();
+        activeAttachments.splice(index, 1);
+        renderAttachmentTray();
+      });
+
+      // Clicking attachment pill opens visualizer modal
+      pill.addEventListener('click', () => {
+        openFileModal(att.relPath);
+      });
+
+      attachmentTray.appendChild(pill);
+    });
+  }
+
+  function clearAttachments() {
+    activeAttachments = [];
+    renderAttachmentTray();
   }
 
   // ----------------------------------------------------
@@ -325,8 +536,19 @@
     chatHistory.forEach(item => {
       if (item.role === 'user') {
         md += `### 👤 User (${item.time})\n\n${item.content}\n\n`;
+        if (item.attachments && item.attachments.length > 0) {
+          md += `*Attachments:*\n`;
+          item.attachments.forEach(a => {
+            md += `- [${a.name}](${a.relPath || a.url})\n`;
+          });
+          md += '\n';
+        }
       } else if (item.role === 'assistant') {
-        md += `### 🤖 Claude Code (${item.time})\n\n${item.content}\n\n`;
+        md += `### 🤖 Claude Code (${item.time})\n\n`;
+        if (item.thinking) {
+          md += `<details><summary>Thinking Process</summary>\n\n\`\`\`\n${item.thinking}\n\`\`\`\n\n</details>\n\n`;
+        }
+        md += `${item.content}\n\n`;
       }
     });
 
@@ -351,7 +573,7 @@
   }
 
   // ----------------------------------------------------
-  // File Explorer
+  // File Explorer & Visualizer Modal
   // ----------------------------------------------------
   async function loadFiles() {
     try {
@@ -359,46 +581,46 @@
       const data = await res.json();
       renderFileTree(data.tree, filesTree);
     } catch (e) {
-      filesTree.innerHTML = '<div class="empty-state-small">Error loading files</div>';
+      filesTree.innerHTML = '<div class="empty-list">Error loading files</div>';
     }
   }
 
   function renderFileTree(items, container) {
     container.innerHTML = '';
     if (!items || items.length === 0) {
-      container.innerHTML = '<div class="empty-state-small">No files found</div>';
+      container.innerHTML = '<div class="empty-list">No files found</div>';
       return;
     }
 
     items.forEach(item => {
-      const node = document.createElement('div');
-      node.className = `tree-node ${item.type === 'directory' ? 'dir' : 'file'}`;
+      const row = document.createElement('div');
+      row.className = `tree-row ${item.type === 'directory' ? 'directory' : 'file'}`;
 
       const icon = item.type === 'directory'
         ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>`
         : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>`;
 
-      node.innerHTML = `${icon}<span>${escapeHtml(item.name)}</span>`;
+      row.innerHTML = `${icon}<span>${escapeHtml(item.name)}</span>`;
 
       if (item.type === 'directory') {
-        const childContainer = document.createElement('div');
-        childContainer.className = 'tree-children';
-        childContainer.style.display = 'none';
+        const nestedContainer = document.createElement('div');
+        nestedContainer.className = 'tree-nested';
+        nestedContainer.style.display = 'none';
 
-        node.addEventListener('click', () => {
-          const isOpen = childContainer.style.display === 'flex';
-          childContainer.style.display = isOpen ? 'none' : 'flex';
+        row.addEventListener('click', () => {
+          const isOpen = nestedContainer.style.display === 'flex';
+          nestedContainer.style.display = isOpen ? 'none' : 'flex';
         });
 
         if (item.children && item.children.length > 0) {
-          renderFileTree(item.children, childContainer);
+          renderFileTree(item.children, nestedContainer);
         }
 
-        container.appendChild(node);
-        container.appendChild(childContainer);
+        container.appendChild(row);
+        container.appendChild(nestedContainer);
       } else {
-        node.addEventListener('click', () => openFileModal(item.path));
-        container.appendChild(node);
+        row.addEventListener('click', () => openFileModal(item.path));
+        container.appendChild(row);
       }
     });
   }
@@ -406,8 +628,12 @@
   async function openFileModal(relPath) {
     try {
       modalFileName.textContent = relPath;
-      modalFileContent.textContent = 'Loading...';
+      modalFileContent.textContent = 'Loading file...';
       modalFileSize.textContent = '';
+      modalTabsGroup.style.display = 'none';
+      modalCodeContainer.style.display = 'block';
+      modalPreviewContainer.style.display = 'none';
+      modalImageContainer.style.display = 'none';
       fileModal.classList.add('active');
 
       const res = await fetch(`/api/file?path=${encodeURIComponent(relPath)}`);
@@ -418,34 +644,93 @@
         return;
       }
 
+      currentModalFileData = data;
       modalFileSize.textContent = `${(data.size / 1024).toFixed(1)} KB`;
-      modalFileContent.textContent = data.content;
 
-      // Auto highlight code
-      if (typeof hljs !== 'undefined') {
-        hljs.highlightElement(modalFileContent);
+      const ext = (relPath.split('.').pop() || '').toLowerCase();
+      const isImg = data.isImage || ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico'].includes(ext);
+      const isMd = ['md', 'markdown'].includes(ext);
+      const isHtml = ['html', 'htm'].includes(ext);
+
+      if (isImg && data.dataUrl) {
+        // Show Image View
+        modalCodeContainer.style.display = 'none';
+        modalPreviewContainer.style.display = 'none';
+        modalImageContainer.style.display = 'flex';
+        modalImagePreview.src = data.dataUrl;
+      } else if (isMd || isHtml) {
+        // Show Tabs (Code + Preview)
+        modalTabsGroup.style.display = 'flex';
+        modalTabCode.classList.add('active');
+        modalTabPreview.classList.remove('active');
+        modalCodeContainer.style.display = 'block';
+        modalPreviewContainer.style.display = 'none';
+        modalFileContent.textContent = data.content;
+
+        if (typeof hljs !== 'undefined') {
+          hljs.highlightElement(modalFileContent);
+        }
+      } else {
+        // Standard Code View
+        modalCodeContainer.style.display = 'block';
+        modalFileContent.textContent = data.content;
+        if (typeof hljs !== 'undefined') {
+          hljs.highlightElement(modalFileContent);
+        }
       }
     } catch (err) {
       modalFileContent.textContent = 'Failed to load file: ' + err.message;
     }
   }
 
+  function switchModalTab(tab) {
+    if (!currentModalFileData) return;
+    if (tab === 'code') {
+      modalTabCode.classList.add('active');
+      modalTabPreview.classList.remove('active');
+      modalCodeContainer.style.display = 'block';
+      modalPreviewContainer.style.display = 'none';
+    } else if (tab === 'preview') {
+      modalTabPreview.classList.add('active');
+      modalTabCode.classList.remove('active');
+      modalCodeContainer.style.display = 'none';
+      modalPreviewContainer.style.display = 'block';
+
+      const ext = (currentModalFileData.path.split('.').pop() || '').toLowerCase();
+      if (['md', 'markdown'].includes(ext)) {
+        modalPreviewContainer.innerHTML = typeof marked !== 'undefined'
+          ? marked.parse(currentModalFileData.content)
+          : escapeHtml(currentModalFileData.content);
+      } else if (['html', 'htm'].includes(ext)) {
+        modalPreviewContainer.innerHTML = currentModalFileData.content;
+      }
+    }
+  }
+
   // ----------------------------------------------------
-  // Chat Execution & Streaming
+  // Chat Execution & Real-Time Streaming
   // ----------------------------------------------------
   async function submitPrompt() {
     const text = promptInput.value.trim();
-    if (!text || isRunning) return;
+    if ((!text && activeAttachments.length === 0) || isRunning) return;
 
     promptInput.value = '';
     resetTextareaHeight();
     welcomeScreen.style.display = 'none';
 
+    const attachmentsToSend = [...activeAttachments];
+    clearAttachments();
+
     const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    chatHistory.push({ role: 'user', content: text, time: timeStr });
+    chatHistory.push({
+      role: 'user',
+      content: text,
+      attachments: attachmentsToSend,
+      time: timeStr
+    });
 
     // 1. Add User Message to UI
-    appendUserMessage(text);
+    appendUserMessage(text, attachmentsToSend);
 
     // 2. Prepare Assistant Message turn in UI
     const turn = createAssistantTurn();
@@ -460,6 +745,7 @@
       const chosenModel = getSelectedModel();
       const payload = {
         prompt: text,
+        attachments: attachmentsToSend,
         sessionId: currentSessionId,
         permissionMode: permissionModeSelect.value,
         model: chosenModel
@@ -519,20 +805,37 @@
       setRunning(false);
       activeAbortController = null;
       turn.finalize();
+
       chatHistory.push({
         role: 'assistant',
         content: turn.getFinalText(),
+        thinking: turn.getFinalThinking(),
+        tools: turn.getToolRecords(),
+        stats: turn.getStats(),
         time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       });
+
       await loadSessions();
       await loadFiles();
     }
   }
 
-  // Handle Event from Claude Code
+  // Handle Event from Claude Code (stream_event, claude, done, error)
   function handleStreamEvent(event, data, turn) {
+    // 1. Real-time delta streaming from Claude CLI!
+    if (event === 'stream_event') {
+      if (data.type === 'content_block_delta') {
+        if (data.delta && data.delta.type === 'text_delta') {
+          turn.appendTextDelta(data.delta.text);
+        } else if (data.delta && data.delta.type === 'thinking_delta') {
+          turn.appendThinking(data.delta.thinking);
+        }
+      }
+      return;
+    }
+
+    // 2. Structured Claude events (init, assistant, user/tool_result, result)
     if (event === 'claude') {
-      // 1. System init
       if (data.type === 'system' && data.subtype === 'init') {
         if (data.session_id) {
           currentSessionId = data.session_id;
@@ -543,20 +846,19 @@
         }
       }
 
-      // 2. Assistant message
       if (data.type === 'assistant' && data.message && Array.isArray(data.message.content)) {
         for (const part of data.message.content) {
           if (part.type === 'thinking') {
-            turn.appendThinking(part.thinking);
+            turn.setThinkingContent(part.thinking);
           } else if (part.type === 'tool_use') {
             turn.addToolCall(part);
           } else if (part.type === 'text') {
+            // Full message text delivered at the end of block
             turn.appendText(part.text);
           }
         }
       }
 
-      // 3. User message (Tool Results)
       if (data.type === 'user' && data.message && Array.isArray(data.message.content)) {
         for (const part of data.message.content) {
           if (part.type === 'tool_result') {
@@ -565,7 +867,6 @@
         }
       }
 
-      // 4. Final result
       if (data.type === 'result') {
         turn.setResultMetadata(data);
       }
@@ -581,94 +882,113 @@
   // ----------------------------------------------------
   function createAssistantTurn() {
     const container = document.createElement('div');
-    container.className = 'message-turn assistant-turn';
+    container.className = 'turn-assistant';
 
     const avatar = document.createElement('div');
-    avatar.className = 'assistant-avatar';
-    avatar.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>`;
+    avatar.className = 'assistant-badge-avatar';
+    avatar.innerHTML = `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>`;
 
-    const body = document.createElement('div');
-    body.className = 'assistant-body';
+    const contentCard = document.createElement('div');
+    contentCard.className = 'assistant-content-card';
 
-    // Thinking Box
+    // Thinking Accordion
     const thinkingBox = document.createElement('div');
-    thinkingBox.className = 'thinking-box';
+    thinkingBox.className = 'thinking-accordion';
     thinkingBox.style.display = 'none';
     thinkingBox.innerHTML = `
-      <div class="thinking-header">
-        <div class="thinking-title">
-          <span class="thinking-icon">⚡</span>
+      <div class="thinking-accordion-header">
+        <div class="thinking-label">
+          <span class="thinking-spark">⚡</span>
           <span>Thinking process</span>
         </div>
-        <span class="thinking-toggle-arrow">▼</span>
+        <span class="toggle-icon">▼</span>
       </div>
-      <div class="thinking-content"></div>
+      <div class="thinking-accordion-content"></div>
     `;
-    const thinkingContent = thinkingBox.querySelector('.thinking-content');
-    const thinkingHeader = thinkingBox.querySelector('.thinking-header');
+    const thinkingContent = thinkingBox.querySelector('.thinking-accordion-content');
+    const thinkingHeader = thinkingBox.querySelector('.thinking-accordion-header');
     thinkingHeader.addEventListener('click', () => {
       const isVisible = thinkingContent.style.display !== 'none';
       thinkingContent.style.display = isVisible ? 'none' : 'block';
-      thinkingBox.querySelector('.thinking-toggle-arrow').textContent = isVisible ? '▶' : '▼';
+      thinkingBox.querySelector('.toggle-icon').textContent = isVisible ? '▶' : '▼';
     });
 
-    // Tool Cards Container
-    const toolsContainer = document.createElement('div');
-    toolsContainer.className = 'tools-container';
-    toolsContainer.style.display = 'flex';
-    toolsContainer.style.flexDirection = 'column';
-    toolsContainer.style.gap = '8px';
+    // Tool Cards Box Container
+    const toolsBox = document.createElement('div');
+    toolsBox.className = 'tools-box-list';
+    toolsBox.style.display = 'flex';
+    toolsBox.style.flexDirection = 'column';
+    toolsBox.style.gap = '8px';
 
-    // Assistant Markdown Text Container
-    const textContainer = document.createElement('div');
-    textContainer.className = 'assistant-text';
+    // Prose Markdown Container
+    const proseContainer = document.createElement('div');
+    proseContainer.className = 'assistant-prose';
 
     // Footer Metadata
     const footer = document.createElement('div');
-    footer.className = 'turn-footer';
+    footer.className = 'turn-meta-footer';
     footer.style.display = 'none';
 
-    body.appendChild(thinkingBox);
-    body.appendChild(toolsContainer);
-    body.appendChild(textContainer);
-    body.appendChild(footer);
+    contentCard.appendChild(thinkingBox);
+    contentCard.appendChild(toolsBox);
+    contentCard.appendChild(proseContainer);
+    contentCard.appendChild(footer);
+
     container.appendChild(avatar);
-    container.appendChild(body);
+    container.appendChild(contentCard);
 
     let rawMarkdown = '';
+    let rawThinking = '';
+    let resultStats = null;
     const activeToolCards = new Map();
+    const toolRecords = [];
 
     return {
       container,
       appendThinking(text) {
+        if (!text) return;
+        rawThinking += text;
         thinkingBox.style.display = 'block';
-        thinkingContent.textContent += text;
+        thinkingContent.textContent = rawThinking;
+        scrollToBottom();
+      },
+      setThinkingContent(text) {
+        if (!text) return;
+        rawThinking = text;
+        thinkingBox.style.display = 'block';
+        thinkingContent.textContent = text;
         scrollToBottom();
       },
       addToolCall(toolPart) {
         const card = document.createElement('div');
-        card.className = 'tool-card';
+        card.className = 'tool-box';
         const targetDesc = getToolTargetDescription(toolPart);
 
         card.innerHTML = `
-          <div class="tool-header">
-            <div class="tool-info">
-              <span class="tool-badge ${escapeHtml(toolPart.name)}">${escapeHtml(toolPart.name)}</span>
-              <span class="tool-target">${escapeHtml(targetDesc)}</span>
+          <div class="tool-box-header">
+            <div class="tool-box-left">
+              <span class="tool-type-badge ${escapeHtml(toolPart.name)}">${escapeHtml(toolPart.name)}</span>
+              <span class="tool-target-text">${escapeHtml(targetDesc)}</span>
             </div>
-            <span class="tool-status-icon">⏳</span>
+            <div class="tool-box-right">
+              <span class="tool-status-icon">⏳</span>
+              <span class="arrow-indicator">▼</span>
+            </div>
           </div>
-          <div class="tool-body" style="display: none;">${escapeHtml(JSON.stringify(toolPart.input, null, 2))}</div>
+          <div class="tool-box-body" style="display: none;">${escapeHtml(JSON.stringify(toolPart.input, null, 2))}</div>
         `;
 
-        const header = card.querySelector('.tool-header');
-        const bodyEl = card.querySelector('.tool-body');
+        const header = card.querySelector('.tool-box-header');
+        const bodyEl = card.querySelector('.tool-box-body');
         header.addEventListener('click', () => {
-          bodyEl.style.display = bodyEl.style.display === 'none' ? 'block' : 'none';
+          const isHidden = bodyEl.style.display === 'none';
+          bodyEl.style.display = isHidden ? 'block' : 'none';
+          card.querySelector('.arrow-indicator').textContent = isHidden ? '▲' : '▼';
         });
 
-        toolsContainer.appendChild(card);
+        toolsBox.appendChild(card);
         activeToolCards.set(toolPart.id, { card, toolPart, bodyEl });
+        toolRecords.push({ ...toolPart, result: null });
         scrollToBottom();
       },
       updateToolResult(resultPart) {
@@ -676,7 +996,10 @@
         if (toolData) {
           const { card, toolPart, bodyEl } = toolData;
           card.querySelector('.tool-status-icon').textContent = '✓';
-          card.querySelector('.tool-status-icon').style.color = 'var(--success-text)';
+          card.querySelector('.tool-status-icon').style.color = 'var(--emerald)';
+
+          const rec = toolRecords.find(r => r.id === resultPart.tool_use_id);
+          if (rec) rec.result = resultPart.content;
 
           // Format output
           let content = typeof resultPart.content === 'string'
@@ -689,21 +1012,27 @@
           } else {
             bodyEl.textContent = content;
           }
-          bodyEl.style.display = 'block'; // open to show output
+          bodyEl.style.display = 'block';
+          card.querySelector('.arrow-indicator').textContent = '▲';
         }
         scrollToBottom();
       },
-      appendText(chunk) {
-        rawMarkdown += chunk;
-        if (typeof marked !== 'undefined') {
-          textContainer.innerHTML = marked.parse(rawMarkdown);
-          addCopyButtonsToCodeBlocks(textContainer);
-        } else {
-          textContainer.textContent = rawMarkdown;
+      appendTextDelta(delta) {
+        rawMarkdown += delta;
+        renderMarkdown();
+      },
+      appendText(fullText) {
+        if (!fullText) return;
+        // Avoid duplicate appends if delta was already streaming
+        if (fullText.length > rawMarkdown.length) {
+          rawMarkdown = fullText;
+        } else if (!rawMarkdown) {
+          rawMarkdown = fullText;
         }
-        scrollToBottom();
+        renderMarkdown();
       },
       setResultMetadata(result) {
+        resultStats = result;
         footer.style.display = 'flex';
         const duration = (result.duration_ms / 1000).toFixed(2);
         const cost = result.total_cost_usd ? `$${result.total_cost_usd.toFixed(4)}` : '';
@@ -711,12 +1040,12 @@
         const outTokens = result.usage ? result.usage.output_tokens : 0;
 
         footer.innerHTML = `
-          <div class="turn-stats-group">
-            <span class="turn-stat">⏱️ ${duration}s</span>
-            <span class="turn-stat">🪙 ${inTokens.toLocaleString()} in / ${outTokens.toLocaleString()} out</span>
-            ${cost ? `<span class="turn-stat">💵 ${cost}</span>` : ''}
+          <div class="turn-meta-stats">
+            <span>⏱️ ${duration}s</span>
+            <span>🪙 ${inTokens.toLocaleString()} in / ${outTokens.toLocaleString()} out</span>
+            ${cost ? `<span>💵 ${cost}</span>` : ''}
           </div>
-          <span class="turn-stat" style="color: var(--success-text)">✓ Completed</span>
+          <span style="color: var(--emerald)">✓ Completed</span>
         `;
       },
       setStatus(status) {
@@ -724,23 +1053,42 @@
       },
       showError(errText) {
         const errDiv = document.createElement('div');
-        errDiv.className = 'status-pill';
-        errDiv.style.backgroundColor = 'var(--danger-bg)';
-        errDiv.style.color = 'var(--danger-text)';
+        errDiv.style.backgroundColor = 'var(--rose-subtle)';
+        errDiv.style.color = 'var(--rose)';
         errDiv.style.padding = '8px 12px';
-        errDiv.style.borderRadius = 'var(--radius-sm)';
+        errDiv.style.borderRadius = 'var(--radius-xs)';
+        errDiv.style.fontSize = '12px';
         errDiv.textContent = 'Error: ' + errText;
-        body.appendChild(errDiv);
+        contentCard.appendChild(errDiv);
       },
       getFinalText() {
         return rawMarkdown || 'Done';
       },
+      getFinalThinking() {
+        return rawThinking;
+      },
+      getToolRecords() {
+        return toolRecords;
+      },
+      getStats() {
+        return resultStats;
+      },
       finalize() {
-        if (!rawMarkdown && toolsContainer.children.length === 0) {
-          textContainer.textContent = 'Completed (no text output).';
+        if (!rawMarkdown && toolsBox.children.length === 0) {
+          proseContainer.textContent = 'Completed (no text output).';
         }
       }
     };
+
+    function renderMarkdown() {
+      if (typeof marked !== 'undefined') {
+        proseContainer.innerHTML = marked.parse(rawMarkdown);
+        addCopyButtonsToCodeBlocks(proseContainer);
+      } else {
+        proseContainer.textContent = rawMarkdown;
+      }
+      scrollToBottom();
+    }
   }
 
   function getToolTargetDescription(toolPart) {
@@ -753,15 +1101,15 @@
 
   function formatDiffView(oldStr, newStr) {
     if (!oldStr && !newStr) return '';
-    let html = '<div class="diff-view">';
+    let html = '<div class="diff-container">';
     if (oldStr) {
       oldStr.split('\n').forEach(line => {
-        html += `<div class="diff-line diff-del">- ${escapeHtml(line)}</div>`;
+        html += `<div class="diff-row del">- ${escapeHtml(line)}</div>`;
       });
     }
     if (newStr) {
       newStr.split('\n').forEach(line => {
-        html += `<div class="diff-line diff-add">+ ${escapeHtml(line)}</div>`;
+        html += `<div class="diff-row add">+ ${escapeHtml(line)}</div>`;
       });
     }
     html += '</div>';
@@ -771,19 +1119,19 @@
   function addCopyButtonsToCodeBlocks(container) {
     const pres = container.querySelectorAll('pre');
     pres.forEach(pre => {
-      if (pre.querySelector('.code-header-bar')) return;
+      if (pre.querySelector('.code-topbar')) return;
       const code = pre.querySelector('code');
       const langClass = Array.from(code.classList).find(c => c.startsWith('language-'));
       const lang = langClass ? langClass.replace('language-', '') : 'code';
 
-      const header = document.createElement('div');
-      header.className = 'code-header-bar';
-      header.innerHTML = `
+      const topbar = document.createElement('div');
+      topbar.className = 'code-topbar';
+      topbar.innerHTML = `
         <span>${escapeHtml(lang)}</span>
-        <button class="copy-btn">Copy</button>
+        <button class="code-copy-btn">Copy</button>
       `;
 
-      const copyBtn = header.querySelector('.copy-btn');
+      const copyBtn = topbar.querySelector('.code-copy-btn');
       copyBtn.addEventListener('click', () => {
         navigator.clipboard.writeText(code.innerText).then(() => {
           copyBtn.textContent = 'Copied!';
@@ -792,14 +1140,43 @@
         });
       });
 
-      pre.insertBefore(header, code);
+      pre.insertBefore(topbar, code);
     });
   }
 
-  function appendUserMessage(text) {
+  function appendUserMessage(text, attachments = []) {
     const turn = document.createElement('div');
-    turn.className = 'message-turn user-turn';
-    turn.innerHTML = `<div class="user-bubble">${escapeHtml(text)}</div>`;
+    turn.className = 'turn-user';
+
+    let html = `<div class="user-message-card">${escapeHtml(text)}</div>`;
+
+    if (attachments && attachments.length > 0) {
+      html += `<div class="user-attachments-grid">`;
+      attachments.forEach(att => {
+        const thumbHtml = att.isImage && att.url
+          ? `<img src="${att.url}" class="user-attachment-thumb" alt="thumb">`
+          : `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>`;
+
+        html += `
+          <div class="user-attachment-card" data-path="${escapeHtml(att.relPath)}">
+            ${thumbHtml}
+            <span>${escapeHtml(att.name)}</span>
+          </div>
+        `;
+      });
+      html += `</div>`;
+    }
+
+    turn.innerHTML = html;
+
+    // Attach click listener to view attached files in modal
+    turn.querySelectorAll('.user-attachment-card').forEach(card => {
+      card.addEventListener('click', () => {
+        const relPath = card.getAttribute('data-path');
+        if (relPath) openFileModal(relPath);
+      });
+    });
+
     messagesFeed.appendChild(turn);
     scrollToBottom();
   }
@@ -808,7 +1185,7 @@
     const div = document.createElement('div');
     div.style.textAlign = 'center';
     div.style.fontSize = '12px';
-    div.style.color = 'var(--text-muted)';
+    div.style.color = 'var(--text-faint)';
     div.style.margin = '10px 0';
     div.innerHTML = html;
     messagesFeed.appendChild(div);
@@ -836,8 +1213,10 @@
     sendBtn.style.display = running ? 'none' : 'inline-flex';
     stopBtn.style.display = running ? 'inline-flex' : 'none';
     promptInput.disabled = running;
-    activeStatusPill.textContent = running ? 'Running Claude...' : 'Idle';
-    activeStatusPill.className = `status-pill ${running ? 'running' : 'idle'}`;
+    activeStatusPill.textContent = running ? 'Claude is working...' : 'Ready';
+    if (statusDot) {
+      statusDot.className = `status-indicator-dot ${running ? 'running' : 'idle'}`;
+    }
   }
 
   function scrollToBottom() {
@@ -932,11 +1311,11 @@
       await checkOmniroute();
     });
 
-    // Tabs inside sidebar
-    document.querySelectorAll('.tab-btn').forEach(btn => {
+    // Tabs inside sidebar (Sessions vs Files)
+    document.querySelectorAll('.tab-item').forEach(btn => {
       btn.addEventListener('click', () => {
-        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+        document.querySelectorAll('.tab-item').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.tab-panel').forEach(c => c.classList.remove('active'));
         btn.classList.add('active');
         const targetTab = document.getElementById(btn.dataset.tab);
         if (targetTab) targetTab.classList.add('active');
@@ -949,8 +1328,8 @@
       showToast('Refreshed file tree');
     });
 
-    // Prompt Suggestions
-    document.querySelectorAll('.suggestion-card').forEach(card => {
+    // Suggestion Cards on Hero Welcome
+    document.querySelectorAll('.hero-card').forEach(card => {
       card.addEventListener('click', () => {
         const p = card.getAttribute('data-prompt');
         if (p) {
@@ -960,10 +1339,10 @@
       });
     });
 
-    // Quick Command Pills
-    document.querySelectorAll('.cmd-pill').forEach(pill => {
-      pill.addEventListener('click', () => {
-        const cmd = pill.getAttribute('data-cmd');
+    // Quick Command Chips
+    document.querySelectorAll('.chip').forEach(chip => {
+      chip.addEventListener('click', () => {
+        const cmd = chip.getAttribute('data-cmd');
         if (cmd) {
           promptInput.value = cmd;
           promptInput.focus();
@@ -971,15 +1350,35 @@
       });
     });
 
+    // Scroll to bottom button
+    if (scrollBottomBtn) {
+      chatContainer.addEventListener('scroll', () => {
+        const distFromBottom = chatContainer.scrollHeight - chatContainer.scrollTop - chatContainer.clientHeight;
+        scrollBottomBtn.style.display = distFromBottom > 150 ? 'flex' : 'none';
+      });
+
+      scrollBottomBtn.addEventListener('click', () => {
+        chatContainer.scrollTo({ top: chatContainer.scrollHeight, behavior: 'smooth' });
+      });
+    }
+
     // Copy File Modal Content
     if (copyFileContentBtn) {
       copyFileContentBtn.addEventListener('click', () => {
-        if (modalFileContent) {
-          navigator.clipboard.writeText(modalFileContent.innerText).then(() => {
+        if (currentModalFileData) {
+          navigator.clipboard.writeText(currentModalFileData.content || '').then(() => {
             showToast('File content copied to clipboard', 'success');
           });
         }
       });
+    }
+
+    // Modal Tabs (Code vs Visual Preview)
+    if (modalTabCode) {
+      modalTabCode.addEventListener('click', () => switchModalTab('code'));
+    }
+    if (modalTabPreview) {
+      modalTabPreview.addEventListener('click', () => switchModalTab('preview'));
     }
 
     // Close File Modal
@@ -1002,6 +1401,11 @@
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') {
         e.preventDefault();
         sidebar.classList.toggle('collapsed');
+      }
+      // Ctrl+N starts new session
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n') {
+        e.preventDefault();
+        startNewSession();
       }
     });
   }

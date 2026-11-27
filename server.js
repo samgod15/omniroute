@@ -10,6 +10,15 @@ const url = require('url');
 const PORT = process.env.PORT || 3000;
 const WORKSPACE_DIR = process.cwd();
 const SESSIONS_FILE = path.join(WORKSPACE_DIR, '.web-sessions.json');
+const SESSIONS_DATA_DIR = path.join(WORKSPACE_DIR, '.web-sessions-data');
+const UPLOADS_DIR = path.join(WORKSPACE_DIR, 'uploads');
+
+if (!fs.existsSync(SESSIONS_DATA_DIR)) {
+  try { fs.mkdirSync(SESSIONS_DATA_DIR, { recursive: true }); } catch (_) {}
+}
+if (!fs.existsSync(UPLOADS_DIR)) {
+  try { fs.mkdirSync(UPLOADS_DIR, { recursive: true }); } catch (_) {}
+}
 
 // In-memory active process tracking: sessionId -> ChildProcess
 const activeProcesses = new Map();
@@ -32,6 +41,34 @@ function saveSessions(sessions) {
     fs.writeFileSync(SESSIONS_FILE, JSON.stringify(sessions, null, 2), 'utf8');
   } catch (err) {
     console.error('Error saving sessions:', err.message);
+  }
+}
+
+// Load message history for a specific session
+function loadSessionMessages(sessionId) {
+  try {
+    const file = path.join(SESSIONS_DATA_DIR, `${sessionId}.json`);
+    if (fs.existsSync(file)) {
+      return JSON.parse(fs.readFileSync(file, 'utf8'));
+    }
+  } catch (err) {
+    console.error('Error loading session messages:', err.message);
+  }
+  return [];
+}
+
+// Save a conversation turn into session history
+function saveSessionMessageTurn(sessionId, turnData) {
+  try {
+    const file = path.join(SESSIONS_DATA_DIR, `${sessionId}.json`);
+    let history = [];
+    if (fs.existsSync(file)) {
+      try { history = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (_) {}
+    }
+    history.push(turnData);
+    fs.writeFileSync(file, JSON.stringify(history, null, 2), 'utf8');
+  } catch (err) {
+    console.error('Error saving session message turn:', err.message);
   }
 }
 
@@ -200,6 +237,17 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ----------------------------------------------------
+  // API: Get Session Message History
+  // ----------------------------------------------------
+  if (method === 'GET' && pathname.startsWith('/api/sessions/') && pathname.endsWith('/messages')) {
+    const id = pathname.replace('/api/sessions/', '').replace('/messages', '');
+    const messages = loadSessionMessages(id);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(messages));
+    return;
+  }
+
+  // ----------------------------------------------------
   // API: Delete a Session
   // ----------------------------------------------------
   if (method === 'DELETE' && pathname.startsWith('/api/sessions/')) {
@@ -207,6 +255,10 @@ const server = http.createServer(async (req, res) => {
     let sessions = loadSessions();
     sessions = sessions.filter(s => s.id !== id);
     saveSessions(sessions);
+    try {
+      const dataFile = path.join(SESSIONS_DATA_DIR, `${id}.json`);
+      if (fs.existsSync(dataFile)) fs.unlinkSync(dataFile);
+    } catch (_) {}
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ success: true }));
     return;
@@ -254,7 +306,49 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ----------------------------------------------------
-  // API: Read file content
+  // API: Upload file or picture
+  // ----------------------------------------------------
+  if (method === 'POST' && pathname === '/api/upload') {
+    try {
+      const body = await parseJsonBody(req);
+      const { name, data } = body;
+      if (!name || !data) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Missing name or data' }));
+        return;
+      }
+
+      const safeName = Date.now() + '_' + path.basename(name).replace(/[^a-zA-Z0-9._-]/g, '_');
+      const targetPath = path.join(UPLOADS_DIR, safeName);
+      const relPath = path.relative(WORKSPACE_DIR, targetPath).replace(/\\/g, '/');
+
+      const base64Data = data.includes(',') ? data.split(',')[1] : data;
+      const buffer = Buffer.from(base64Data, 'base64');
+      fs.writeFileSync(targetPath, buffer);
+
+      const ext = path.extname(safeName).toLowerCase();
+      const imageExts = new Set(['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp']);
+      const isImage = imageExts.has(ext);
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        success: true,
+        filename: safeName,
+        originalName: name,
+        path: relPath,
+        size: buffer.length,
+        isImage,
+        url: `/uploads/${safeName}`
+      }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
+  // ----------------------------------------------------
+  // API: Read and visualising files (Code, Images, Markdown, HTML)
   // ----------------------------------------------------
   if (method === 'GET' && pathname === '/api/file') {
     const relPath = parsedUrl.query.path;
@@ -271,15 +365,46 @@ const server = http.createServer(async (req, res) => {
     }
     try {
       const stats = fs.statSync(safePath);
-      if (stats.size > 2 * 1024 * 1024) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'File too large to view (> 2MB)' }));
+      const ext = path.extname(safePath).toLowerCase();
+      const imageExts = new Set(['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.ico', '.bmp']);
+
+      if (imageExts.has(ext)) {
+        if (stats.size > 15 * 1024 * 1024) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Image too large (> 15MB)' }));
+          return;
+        }
+        const fileData = fs.readFileSync(safePath);
+        const base64 = fileData.toString('base64');
+        const mime = ext === '.svg' ? 'image/svg+xml' : (ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : `image/${ext.slice(1)}`);
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          path: relPath,
+          name: path.basename(safePath),
+          isImage: true,
+          dataUrl: `data:${mime};base64,${base64}`,
+          size: stats.size,
+          updatedAt: stats.mtime
+        }));
         return;
       }
+
+      if (stats.size > 3 * 1024 * 1024) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'File too large to view (> 3MB)' }));
+        return;
+      }
+
       const content = fs.readFileSync(safePath, 'utf8');
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         path: relPath,
+        name: path.basename(safePath),
+        isImage: false,
+        isMarkdown: ext === '.md',
+        isHtml: ext === '.html' || ext === '.htm',
+        ext: ext.slice(1),
         content,
         size: stats.size,
         updatedAt: stats.mtime
@@ -370,10 +495,14 @@ const server = http.createServer(async (req, res) => {
     if (sessionId) {
       args.push('--resume', sessionId);
     }
-    if (permissionMode) {
-      args.push('--permission-mode', permissionMode);
-    }
-    if (model) {
+
+    // Valid permission modes according to claude --help:
+    const validModes = ['acceptEdits', 'auto', 'bypassPermissions', 'manual', 'dontAsk', 'plan'];
+    const pMode = validModes.includes(permissionMode) ? permissionMode : 'acceptEdits';
+    args.push('--permission-mode', pMode);
+    args.push('--permission-prompts', 'none');
+
+    if (model && model !== 'auto' && model !== '__custom__') {
       args.push('--model', model);
     }
 
@@ -408,14 +537,17 @@ const server = http.createServer(async (req, res) => {
 
     let detectedSessionId = sessionId || null;
     let turnResultText = '';
+    let turnAssistantText = '';
+    let turnThinkingText = '';
+    let turnResultStats = null;
+    const turnTools = new Map(); // id -> { id, name, input, result }
     let stdoutBuffer = '';
 
     // Handle stdout chunks
     proc.stdout.on('data', chunk => {
       stdoutBuffer += chunk.toString('utf8');
       const lines = stdoutBuffer.split('\n');
-      // Keep incomplete trailing line in buffer
-      stdoutBuffer = lines.pop();
+      stdoutBuffer = lines.pop(); // keep trailing incomplete chunk
 
       for (const line of lines) {
         const trimmed = line.trim();
@@ -430,14 +562,60 @@ const server = http.createServer(async (req, res) => {
             activeProcesses.set(detectedSessionId, proc);
           }
 
-          // Accumulate result text
-          if (parsed.type === 'result' && parsed.result) {
-            turnResultText = parsed.result;
+          // Accumulate result text & stats
+          if (parsed.type === 'result') {
+            if (parsed.result) turnResultText = parsed.result;
+            turnResultStats = {
+              duration_ms: parsed.duration_ms,
+              total_cost_usd: parsed.total_cost_usd,
+              usage: parsed.usage
+            };
+          }
+
+          // Stream events
+          if (parsed.type === 'stream_event' && parsed.event) {
+            const ev = parsed.event;
+            if (ev.type === 'content_block_delta' && ev.delta) {
+              if (ev.delta.type === 'text_delta') {
+                turnAssistantText += ev.delta.text || '';
+              } else if (ev.delta.type === 'thinking_delta') {
+                turnThinkingText += ev.delta.thinking || '';
+              }
+            }
+          }
+
+          // Full assistant messages
+          if (parsed.type === 'assistant' && parsed.message && Array.isArray(parsed.message.content)) {
+            for (const item of parsed.message.content) {
+              if (item.type === 'tool_use') {
+                turnTools.set(item.id, {
+                  id: item.id,
+                  name: item.name,
+                  input: item.input
+                });
+              } else if (item.type === 'text' && !turnAssistantText) {
+                turnAssistantText = item.text;
+              } else if (item.type === 'thinking' && !turnThinkingText) {
+                turnThinkingText = item.thinking;
+              }
+            }
+          }
+
+          // Tool results from user message
+          if (parsed.type === 'user' && parsed.message && Array.isArray(parsed.message.content)) {
+            for (const item of parsed.message.content) {
+              if (item.type === 'tool_result' && item.tool_use_id) {
+                const existing = turnTools.get(item.tool_use_id);
+                if (existing) {
+                  existing.result = item.content;
+                }
+              }
+            }
           }
 
           sendEvent('claude', parsed);
         } catch (e) {
-          // If not pure JSON, send as raw system log
+          // If not pure JSON (e.g. unrecognized model log), pass as raw
           sendEvent('raw', { text: trimmed });
         }
       }
@@ -468,7 +646,7 @@ const server = http.createServer(async (req, res) => {
         }
       }
 
-      // Update saved sessions
+      // Update saved sessions index
       if (detectedSessionId) {
         const sessions = loadSessions();
         const existingIdx = sessions.findIndex(s => s.id === detectedSessionId);
@@ -488,12 +666,22 @@ const server = http.createServer(async (req, res) => {
           });
         }
         saveSessions(sessions);
+
+        // Save detailed turn into session message history
+        saveSessionMessageTurn(detectedSessionId, {
+          prompt,
+          assistant: turnResultText || turnAssistantText,
+          thinking: turnThinkingText,
+          tools: Array.from(turnTools.values()),
+          stats: turnResultStats,
+          timestamp: new Date().toISOString()
+        });
       }
 
       sendEvent('done', {
         exitCode: code,
         sessionId: detectedSessionId,
-        turnResult: turnResultText
+        turnResult: turnResultText || turnAssistantText
       });
       res.end();
     });
