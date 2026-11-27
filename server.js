@@ -351,12 +351,21 @@ const server = http.createServer(async (req, res) => {
     // Determine executable name for platform
     const claudeCmd = process.platform === 'win32' ? 'claude.exe' : 'claude';
 
+    // Auto-configure OmniRoute router environment
+    const omniroutePort = process.env.OMNIROUTE_PORT || '20128';
+    const childEnv = {
+      ...process.env,
+      ANTHROPIC_BASE_URL: process.env.ANTHROPIC_BASE_URL || `http://localhost:${omniroutePort}`,
+      ANTHROPIC_AUTH_TOKEN: process.env.ANTHROPIC_AUTH_TOKEN || 'omniroute'
+    };
+
     let proc;
     try {
       proc = spawn(claudeCmd, args, {
         cwd: WORKSPACE_DIR,
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env }
+        env: childEnv
+      });
       });
     } catch (err) {
       sendEvent('error', { message: `Failed to spawn Claude: ${err.message}` });
@@ -499,8 +508,10 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
+  const routerUrl = process.env.ANTHROPIC_BASE_URL || `http://localhost:${process.env.OMNIROUTE_PORT || '20128'}`;
   console.log(`\n======================================================`);
-  console.log(`🚀 Claude Code Web GUI running at: http://localhost:${PORT}`);
+  console.log(`🚀 Claude Code Web Studio running at: http://localhost:${PORT}`);
   console.log(`📁 Workspace: ${WORKSPACE_DIR}`);
+  console.log(`🌐 Routed via OmniRoute: ${routerUrl}`);
   console.log(`======================================================\n`);
 });
