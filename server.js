@@ -366,7 +366,6 @@ const server = http.createServer(async (req, res) => {
         stdio: ['ignore', 'pipe', 'pipe'],
         env: childEnv
       });
-      });
     } catch (err) {
       sendEvent('error', { message: `Failed to spawn Claude: ${err.message}` });
       res.end();
