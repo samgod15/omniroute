@@ -39,6 +39,7 @@
   const themeToggle = document.getElementById('themeToggle');
   const sidebar = document.getElementById('sidebar');
   const sidebarToggle = document.getElementById('sidebarToggle');
+  const navSidebarToggle = document.getElementById('navSidebarToggle');
   const mobileMenuBtn = document.getElementById('mobileMenuBtn');
   const workspacePath = document.getElementById('workspacePath');
   const activeStatusPill = document.getElementById('activeStatusPill');
@@ -110,6 +111,7 @@
   // ----------------------------------------------------
   async function init() {
     initTheme();
+    initSidebarState();
     bindEvents();
     setupTextareaAutoGrow();
     setupDropAndPaste();
@@ -120,6 +122,33 @@
 
     // Check OmniRoute status periodically (every 15s)
     setInterval(checkOmniroute, 15000);
+  }
+
+  function initSidebarState() {
+    const saved = localStorage.getItem('claude-web-sidebar-collapsed');
+    if (saved === 'true' && window.innerWidth > 768) {
+      sidebar.classList.add('collapsed');
+      updateSidebarTooltips(true);
+    }
+  }
+
+  function toggleSidebar(forceState) {
+    const isMobile = window.innerWidth <= 768;
+    if (isMobile) {
+      const willOpen = forceState !== undefined ? forceState : !sidebar.classList.contains('mobile-open');
+      sidebar.classList.toggle('mobile-open', willOpen);
+    } else {
+      const willCollapse = forceState !== undefined ? forceState : !sidebar.classList.contains('collapsed');
+      sidebar.classList.toggle('collapsed', willCollapse);
+      localStorage.setItem('claude-web-sidebar-collapsed', willCollapse ? 'true' : 'false');
+      updateSidebarTooltips(willCollapse);
+    }
+  }
+
+  function updateSidebarTooltips(isCollapsed) {
+    const title = isCollapsed ? 'Expand sidebar (Ctrl+B)' : 'Collapse sidebar (Ctrl+B)';
+    if (sidebarToggle) sidebarToggle.title = title;
+    if (navSidebarToggle) navSidebarToggle.title = title;
   }
 
   // Theme Handling
@@ -1329,14 +1358,16 @@
     // Theme Toggle
     themeToggle.addEventListener('click', toggleTheme);
 
-    // Sidebar Toggle
-    sidebarToggle.addEventListener('click', () => {
-      sidebar.classList.toggle('collapsed');
-    });
-
-    mobileMenuBtn.addEventListener('click', () => {
-      sidebar.classList.toggle('mobile-open');
-    });
+    // Sidebar Toggles
+    if (sidebarToggle) {
+      sidebarToggle.addEventListener('click', () => toggleSidebar());
+    }
+    if (navSidebarToggle) {
+      navSidebarToggle.addEventListener('click', () => toggleSidebar());
+    }
+    if (mobileMenuBtn) {
+      mobileMenuBtn.addEventListener('click', () => toggleSidebar());
+    }
 
     // OmniRoute status click to re-check
     omnirouteBadge.addEventListener('click', async () => {
@@ -1433,7 +1464,7 @@
       // Ctrl+B toggles sidebar
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') {
         e.preventDefault();
-        sidebar.classList.toggle('collapsed');
+        toggleSidebar();
       }
       // Ctrl+N starts new session
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n') {

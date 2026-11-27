@@ -110,8 +110,16 @@ body {
 }
 
 .sidebar.collapsed {
+  width: 0;
   transform: translateX(-100%);
   position: absolute;
+  pointer-events: none;
+}
+
+.sidebar.collapsed ~ .main-workspace .nav-sidebar-btn {
+  background-color: var(--accent-subtle);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .sidebar-header {
@@ -513,6 +521,33 @@ body {
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+.nav-sidebar-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-xs);
+  background-color: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.16s ease;
+  flex-shrink: 0;
+}
+
+.nav-sidebar-btn:hover {
+  background-color: var(--bg-hover);
+  color: var(--accent);
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
+}
+
+.nav-sidebar-btn svg {
+  width: 16px;
+  height: 16px;
 }
 
 .session-meta {
