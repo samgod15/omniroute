@@ -38,6 +38,7 @@
   const customModelInput = document.getElementById('customModelInput');
   const themeToggle = document.getElementById('themeToggle');
   const sidebar = document.getElementById('sidebar');
+  const sidebarBackdrop = document.getElementById('sidebarBackdrop');
   const sidebarToggle = document.getElementById('sidebarToggle');
   const navSidebarToggle = document.getElementById('navSidebarToggle');
   const mobileMenuBtn = document.getElementById('mobileMenuBtn');
@@ -125,10 +126,17 @@
   }
 
   function initSidebarState() {
-    const saved = localStorage.getItem('claude-web-sidebar-collapsed');
-    if (saved === 'true' && window.innerWidth > 768) {
-      sidebar.classList.add('collapsed');
-      updateSidebarTooltips(true);
+    const isMobile = window.innerWidth <= 768;
+    if (isMobile) {
+      sidebar.classList.remove('collapsed');
+      sidebar.classList.remove('mobile-open');
+      if (sidebarBackdrop) sidebarBackdrop.classList.remove('active');
+      updateSidebarTooltips(false);
+    } else {
+      const saved = localStorage.getItem('claude-web-sidebar-collapsed');
+      const isCollapsed = saved === 'true';
+      sidebar.classList.toggle('collapsed', isCollapsed);
+      updateSidebarTooltips(isCollapsed);
     }
   }
 
@@ -137,6 +145,9 @@
     if (isMobile) {
       const willOpen = forceState !== undefined ? forceState : !sidebar.classList.contains('mobile-open');
       sidebar.classList.toggle('mobile-open', willOpen);
+      if (sidebarBackdrop) {
+        sidebarBackdrop.classList.toggle('active', willOpen);
+      }
     } else {
       const willCollapse = forceState !== undefined ? forceState : !sidebar.classList.contains('collapsed');
       sidebar.classList.toggle('collapsed', willCollapse);
@@ -145,8 +156,20 @@
     }
   }
 
+  function closeMobileSidebar() {
+    if (window.innerWidth <= 768) {
+      sidebar.classList.remove('mobile-open');
+      if (sidebarBackdrop) {
+        sidebarBackdrop.classList.remove('active');
+      }
+    }
+  }
+
   function updateSidebarTooltips(isCollapsed) {
-    const title = isCollapsed ? 'Expand sidebar (Ctrl+B)' : 'Collapse sidebar (Ctrl+B)';
+    const isMobile = window.innerWidth <= 768;
+    const title = isMobile
+      ? 'Toggle menu'
+      : (isCollapsed ? 'Expand sidebar (Ctrl+B)' : 'Collapse sidebar (Ctrl+B)');
     if (sidebarToggle) sidebarToggle.title = title;
     if (navSidebarToggle) navSidebarToggle.title = title;
   }
@@ -271,6 +294,7 @@
   }
 
   async function selectSession(sess) {
+    closeMobileSidebar();
     currentSessionId = sess.id;
     currentSessionTitle.textContent = sess.title || 'Session ' + sess.id.slice(0, 8);
     currentSessionIdTag.textContent = sess.id;
@@ -393,6 +417,7 @@
   }
 
   function startNewSession() {
+    closeMobileSidebar();
     currentSessionId = null;
     currentSessionTitle.textContent = 'New Session';
     currentSessionIdTag.textContent = 'Ready';
@@ -1368,6 +1393,22 @@
     if (mobileMenuBtn) {
       mobileMenuBtn.addEventListener('click', () => toggleSidebar());
     }
+    if (sidebarBackdrop) {
+      sidebarBackdrop.addEventListener('click', closeMobileSidebar);
+    }
+
+    // Window resize handler to maintain consistent sidebar state across breakpoints
+    window.addEventListener('resize', () => {
+      if (window.innerWidth > 768) {
+        closeMobileSidebar();
+        const saved = localStorage.getItem('claude-web-sidebar-collapsed');
+        sidebar.classList.toggle('collapsed', saved === 'true');
+        updateSidebarTooltips(saved === 'true');
+      } else {
+        sidebar.classList.remove('collapsed');
+        updateSidebarTooltips(false);
+      }
+    });
 
     // OmniRoute status click to re-check
     omnirouteBadge.addEventListener('click', async () => {
@@ -1455,11 +1496,12 @@
 
     // Global Keyboard Shortcuts
     document.addEventListener('keydown', (e) => {
-      // Escape closes modal
+      // Escape closes modal and mobile drawer
       if (e.key === 'Escape') {
         if (fileModal.classList.contains('active')) {
           fileModal.classList.remove('active');
         }
+        closeMobileSidebar();
       }
       // Ctrl+B toggles sidebar
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') {
